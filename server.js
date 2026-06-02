@@ -7,6 +7,11 @@ const PORT = process.env.PORT || 3456;
 const DB_FILE = path.join(__dirname, "data.json");
 const USE_KV = !!process.env.KV_REST_API_URL;
 
+let kv;
+if (USE_KV) {
+  ({ kv } = require("@vercel/kv"));
+}
+
 const IMAGES = [
   "2001.jpg",
   "Aliens.jpg",
@@ -22,7 +27,6 @@ const MAX_PER_IMAGE = 3;
 
 async function loadData() {
   if (USE_KV) {
-    const { kv } = require("@vercel/kv");
     const raw = await kv.hgetall("assignments");
     if (!raw) return {};
     const data = {};
@@ -37,7 +41,6 @@ async function loadData() {
 
 async function addEntry(key, entry) {
   if (USE_KV) {
-    const { kv } = require("@vercel/kv");
     await kv.hset("assignments", { [key]: JSON.stringify(entry) });
     return;
   }
@@ -48,7 +51,6 @@ async function addEntry(key, entry) {
 
 async function resetData() {
   if (USE_KV) {
-    const { kv } = require("@vercel/kv");
     await kv.del("assignments");
     return;
   }
@@ -269,8 +271,13 @@ app.get("/admin", async (req, res) => {
 });
 
 app.post("/admin/reset", async (req, res) => {
-  await resetData();
-  res.redirect("/admin");
+  try {
+    await resetData();
+    res.redirect("/admin");
+  } catch (err) {
+    console.error("Reset failed:", err);
+    res.status(500).send(`<pre>Reset failed: ${err.message}</pre><br><a href="/admin">Back</a>`);
+  }
 });
 
 if (!process.env.VERCEL) {
