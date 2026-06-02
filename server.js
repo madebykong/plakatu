@@ -5,6 +5,7 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3456;
 const DB_FILE = path.join(__dirname, "data.json");
+const USE_KV = !!process.env.KV_REST_API_URL;
 
 const IMAGES = [
   "2001.jpg",
@@ -19,25 +20,48 @@ const IMAGES = [
 
 const MAX_PER_IMAGE = 3;
 
-function loadData() {
-  if (fs.existsSync(DB_FILE)) {
-    return JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
+async function loadData() {
+  if (USE_KV) {
+    const { kv } = require("@vercel/kv");
+    const raw = await kv.hgetall("assignments");
+    if (!raw) return {};
+    const data = {};
+    for (const [k, v] of Object.entries(raw)) {
+      data[k] = typeof v === "string" ? JSON.parse(v) : v;
+    }
+    return data;
   }
+  if (fs.existsSync(DB_FILE)) return JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
   return {};
 }
 
-function saveData(data) {
+async function addEntry(key, entry) {
+  if (USE_KV) {
+    const { kv } = require("@vercel/kv");
+    await kv.hset("assignments", { [key]: JSON.stringify(entry) });
+    return;
+  }
+  const data = await loadData();
+  data[key] = entry;
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
+
+async function resetData() {
+  if (USE_KV) {
+    const { kv } = require("@vercel/kv");
+    await kv.del("assignments");
+    return;
+  }
+  fs.writeFileSync(DB_FILE, JSON.stringify({}, null, 2));
 }
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use("/images", express.static(path.join(__dirname, "public/images")));
 
-app.get("/", (req, res) => {
-  const data = loadData();
-  const totalAssigned = Object.keys(data).length;
-  const spotsLeft = MAX_PER_IMAGE * IMAGES.length - totalAssigned;
+app.get("/", async (req, res) => {
+  const data = await loadData();
+  const spotsLeft = MAX_PER_IMAGE * IMAGES.length - Object.keys(data).length;
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -72,13 +96,13 @@ app.get("/", (req, res) => {
 </html>`);
 });
 
-app.post("/assign", (req, res) => {
+app.post("/assign", async (req, res) => {
   const rawName = (req.body.name || "").trim();
   if (!rawName) return res.redirect("/");
 
   const name = rawName.charAt(0).toUpperCase() + rawName.slice(1);
   const key = name.toLowerCase();
-  const data = loadData();
+  const data = await loadData();
 
   if (data[key]) {
     return res.redirect(`/poster/${encodeURIComponent(key)}`);
@@ -115,14 +139,13 @@ app.post("/assign", (req, res) => {
   }
 
   const image = available[Math.floor(Math.random() * available.length)];
-  data[key] = { name, image };
-  saveData(data);
+  await addEntry(key, { name, image });
 
   res.redirect(`/poster/${encodeURIComponent(key)}`);
 });
 
-app.get("/poster/:key", (req, res) => {
-  const data = loadData();
+app.get("/poster/:key", async (req, res) => {
+  const data = await loadData();
   const entry = data[req.params.key];
 
   if (!entry) return res.redirect("/");
@@ -156,8 +179,8 @@ app.get("/poster/:key", (req, res) => {
 </html>`);
 });
 
-app.get("/gallery", (req, res) => {
-  const data = loadData();
+app.get("/gallery", async (req, res) => {
+  const data = await loadData();
 
   const imageNames = {};
   IMAGES.forEach((img) => (imageNames[img] = []));
@@ -206,8 +229,8 @@ app.get("/gallery", (req, res) => {
 </html>`);
 });
 
-app.get("/admin", (req, res) => {
-  const data = loadData();
+app.get("/admin", async (req, res) => {
+  const data = await loadData();
   const total = Object.keys(data).length;
 
   res.send(`<!DOCTYPE html>
@@ -222,7 +245,7 @@ app.get("/admin", (req, res) => {
     .container { text-align: center; max-width: 400px; padding: 2rem; }
     h1 { color: #e0e0e0; margin-bottom: 0.5rem; letter-spacing: 0.1em; }
     .count { color: #666; margin-bottom: 2rem; }
-    form button { padding: 0.75rem 2rem; background: #555555; color: white; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: background 0.2s; font-family: inherit; }
+    form button { padding: 0.75rem 2rem; background: #555555; color: white; border: none; font-size: 1rem; cursor: pointer; transition: background 0.2s; font-family: inherit; }
     form button:hover { background: #444444; }
     .links { margin-top: 1.5rem; }
     a { color: #999; text-decoration: none; margin: 0 0.75rem; font-size: 0.9rem; }
@@ -245,11 +268,15 @@ app.get("/admin", (req, res) => {
 </html>`);
 });
 
-app.post("/admin/reset", (req, res) => {
-  saveData({});
+app.post("/admin/reset", async (req, res) => {
+  await resetData();
   res.redirect("/admin");
 });
 
-app.listen(PORT, () => {
-  console.log(`Plakatu running at http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Plakatu running at http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;
