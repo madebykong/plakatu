@@ -5,11 +5,19 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3456;
 const DB_FILE = path.join(__dirname, "data.json");
-const USE_KV = !!process.env.KV_REST_API_URL;
+const USE_KV = !!process.env.UPSTASH_REDIS_REST_URL;
 
-let kv;
+if (process.env.VERCEL && !USE_KV) {
+  throw new Error("UPSTASH_REDIS_REST_URL is not set. Add Upstash Redis env vars to this project in the Vercel dashboard.");
+}
+
+let redis;
 if (USE_KV) {
-  ({ kv } = require("@vercel/kv"));
+  const { Redis } = require("@upstash/redis");
+  redis = new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+  });
 }
 
 const IMAGES = [
@@ -27,7 +35,7 @@ const MAX_PER_IMAGE = 3;
 
 async function loadData() {
   if (USE_KV) {
-    const raw = await kv.hgetall("assignments");
+    const raw = await redis.hgetall("assignments");
     if (!raw) return {};
     const data = {};
     for (const [k, v] of Object.entries(raw)) {
@@ -41,7 +49,7 @@ async function loadData() {
 
 async function addEntry(key, entry) {
   if (USE_KV) {
-    await kv.hset("assignments", { [key]: JSON.stringify(entry) });
+    await redis.hset("assignments", { [key]: JSON.stringify(entry) });
     return;
   }
   const data = await loadData();
@@ -51,7 +59,7 @@ async function addEntry(key, entry) {
 
 async function resetData() {
   if (USE_KV) {
-    await kv.del("assignments");
+    await redis.del("assignments");
     return;
   }
   fs.writeFileSync(DB_FILE, JSON.stringify({}, null, 2));
